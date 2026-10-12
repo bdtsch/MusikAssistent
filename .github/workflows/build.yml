@@ -1,0 +1,67 @@
+name: APK bauen
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Liegt ein projekt.zip im Repo, wird es mit allen Ordnern entpackt und eingecheckt.
+      # So reicht es, ein einziges Zip hochzuladen (geht auch vom Handy).
+      - name: projekt.zip entpacken
+        run: |
+          if [ -f projekt.zip ]; then
+            mkdir -p /tmp/entpackt
+            unzip -o -q projekt.zip -d /tmp/entpackt
+            quelle=/tmp/entpackt
+            # Falls im Zip ein einzelner Oberordner steckt, dessen Inhalt nehmen
+            if [ "$(ls -A /tmp/entpackt | wc -l)" = "1" ] && [ -d "/tmp/entpackt/$(ls -A /tmp/entpackt)" ]; then
+              quelle="/tmp/entpackt/$(ls -A /tmp/entpackt)"
+            fi
+            cp -a "$quelle"/. .
+            git rm -q projekt.zip
+            git config user.name "github-actions"
+            git config user.email "github-actions@users.noreply.github.com"
+            git add -A
+            git commit -m "projekt.zip entpackt" || true
+            git push
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      # Deutsches Offline-Sprachmodell (ca. 45 MB) in die App packen
+      - name: Sprachmodell laden
+        run: |
+          curl -L -o /tmp/model.zip https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip
+          unzip -q /tmp/model.zip -d /tmp
+          mkdir -p app/src/main/assets
+          rm -rf app/src/main/assets/model-de
+          mv /tmp/vosk-model-small-de-0.15 app/src/main/assets/model-de
+          echo "vosk-model-small-de-0.15" > app/src/main/assets/model-de/uuid
+
+      # Signaturschlüssel liegt als Text im Repo
+      - name: Schlüssel entpacken
+        run: base64 -d app/signing.keystore.b64 > app/signing.keystore
+
+      - name: APK bauen
+        run: gradle assembleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MusikAssistent-APK
+          path: app/build/outputs/apk/release/*.apk
