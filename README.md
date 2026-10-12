@@ -31,6 +31,7 @@ In der App die drei Schritte unter „Einrichtung“ antippen:
 1. Mikrofon & Benachrichtigungen erlauben
 2. „Über anderen Apps einblenden“ erlauben – sonst darf die App Tidal/Spotify nicht aus dem Hintergrund öffnen
 3. Akku-Optimierung ausschalten – OxygenOS beendet die App sonst nach kurzer Zeit
+4. Benachrichtigungszugriff erlauben – nötig, damit Songs direkt abgespielt werden statt nur gesucht. Ist der Schalter ausgegraut: App-Info → ⋮ → „Eingeschränkte Einstellungen zulassen“.
 
 Zusätzlich empfohlen: *Einstellungen → Akku → Musik-Assistent → Hintergrundaktivität erlauben* und die App in der Übersicht der zuletzt genutzten Apps mit dem Schloss fixieren.
 

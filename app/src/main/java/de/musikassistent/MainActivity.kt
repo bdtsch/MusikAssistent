@@ -144,20 +144,40 @@ class MainActivity : Activity() {
             text = "3. Akku-Optimierung ausschalten"
             setOnClickListener { akkuAusnahme() }
         }, 8))
+        spalte.addView(abstand(Button(this).apply {
+            text = "4. Benachrichtigungszugriff erlauben (für direktes Abspielen)"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+        }, 8))
+        spalte.addView(TextView(this).apply {
+            textSize = 13f
+            text = "Ist der Schalter bei Schritt 4 ausgegraut („Eingeschränkte Einstellung“): " +
+                "Einstellungen → Apps → Musik-Assistent → oben rechts ⋮ → „Eingeschränkte Einstellungen zulassen“, " +
+                "danach Schritt 4 nochmal."
+        })
+        spalte.addView(abstand(Button(this).apply {
+            text = "App-Info öffnen"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")))
+            }
+        }, 4))
 
         spalte.addView(abstand(TextView(this).apply {
             textSize = 14f
             text = """
-                Befehle (nach dem Aktivierungswort und dem Piepton):
-                • „weiter“ / „nächster“ – nächster Song
-                • „zurück“ – vorheriger Song
+                Befehle (nach dem Aktivierungswort und dem Piepton), Deutsch oder Englisch:
+                • „weiter“ / „next“ / „skip“ – nächster Song
+                • „zurück“ / „previous“ – vorheriger Song
                 • „pause“ / „stopp“ – anhalten
-                • „play“ / „fortsetzen“ – weiterspielen
-                • „lauter“ / „leiser“
+                • „play“ / „fortsetzen“ / „resume“ – weiterspielen
+                • „lauter“ / „leiser“ / „volume up“ / „volume down“
                 • „spiel Bohemian Rhapsody“ – Standard-App
-                • „spiel Linkin Park auf Spotify“
+                • „spiel Linkin Park auf Spotify“ / „play Numb on Spotify“
                 • „spiel das Album Random Access Memories auf Tidal“
-                • „Assistent aus“ – beendet das Lauschen
+                • „spiel Tidal“ – Tidal starten und weiterspielen
+                • „Assistent aus“ / „stop listening“ – beendet das Lauschen
 
                 Tipp: In den Schnelleinstellungen (Statusleiste runterziehen → Stift) gibt es eine
                 Kachel „Musik-Assistent“ zum schnellen An- und Ausschalten, z. B. beim Einsteigen ins Auto.
@@ -175,6 +195,7 @@ class MainActivity : Activity() {
         if (!Settings.canDrawOverlays(this)) fehlend += "Über anderen Apps einblenden"
         val pm = getSystemService(PowerManager::class.java)
         if (!pm.isIgnoringBatteryOptimizations(packageName)) fehlend += "Akku-Optimierung aus (empfohlen)"
+        if (!MusikSteuerung(this).hatSitzungszugriff()) fehlend += "Benachrichtigungszugriff (sonst nur Suche statt Abspielen)"
         hinweis.text = if (fehlend.isEmpty()) "Alles eingerichtet ✓"
             else "Noch nötig: " + fehlend.joinToString(", ")
         hinweis.gravity = Gravity.START

@@ -196,7 +196,7 @@ class AssistentService : Service() {
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onResults(results: Bundle?) {
                 val liste = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                befehlErhalten(liste?.firstOrNull())
+                befehlErhalten(liste ?: emptyList<String>())
             }
             override fun onError(error: Int) {
                 Log.w(TAG, "Google-Erkennung Fehler $error")
@@ -217,7 +217,13 @@ class AssistentService : Service() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            // Englisch zusätzlich erlauben (Songtitel, englische Befehle)
+            putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-US", "en-GB"))
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true)
+                putStringArrayListExtra(RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES, arrayListOf("de-DE", "en-US"))
+            }
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
         }
         sr.startListening(intent)
@@ -233,7 +239,7 @@ class AssistentService : Service() {
                     override fun onPartialResult(hypothesis: String?) {}
                     override fun onResult(hypothesis: String?) {
                         val text = hypothesis?.let { JSONObject(it).optString("text") }
-                        if (!text.isNullOrBlank()) befehlErhalten(text)
+                        if (!text.isNullOrBlank()) befehlErhalten(listOf(text))
                     }
                     override fun onFinalResult(hypothesis: String?) {}
                     override fun onError(exception: Exception?) = befehlErhalten(null)
@@ -245,19 +251,21 @@ class AssistentService : Service() {
         }
     }
 
-    private fun befehlErhalten(text: String?) {
+    private fun befehlErhalten(vorschlaege: List<String>?) {
         if (zustand != Zustand.BEFEHL) return
         zustand = Zustand.AUSFUEHREN
         voskStoppen()
         googleStoppen()
         fokusAbgeben()
-        Log.i(TAG, "Befehl: $text")
+        Log.i(TAG, "Befehl: $vorschlaege")
 
-        if (text.isNullOrBlank()) {
+        val liste = vorschlaege?.filter { it.isNotBlank() }.orEmpty()
+        if (liste.isEmpty()) {
             sagenDannLauschen("Nicht verstanden")
             return
         }
-        ausfuehren(BefehlsParser.parse(text))
+        status("Verstanden: ${liste.first()}")
+        ausfuehren(BefehlsParser.parseAlle(liste))
     }
 
     // ---------------- Phase 3: ausführen ----------------
@@ -277,11 +285,16 @@ class AssistentService : Service() {
                     app = MusikApp.values().firstOrNull { musik.istInstalliert(it) }
                         ?: return sagenDannLauschen("Weder Tidal noch Spotify installiert")
                 }
+                val ansage = if (b.suchbegriff.isBlank()) "Starte ${app.anzeige}"
+                    else "Spiele ${b.suchbegriff} auf ${app.anzeige}"
                 // erst ansagen, dann starten, damit die Ansage nicht in die Musik quatscht
-                sagen("Spiele ${b.suchbegriff}") {
-                    val ok = musik.suchenUndSpielen(b.suchbegriff, app)
-                    if (!ok) sagenDannLauschen("${app.anzeige} konnte nicht geöffnet werden")
-                    else lauschen()
+                sagen(ansage) {
+                    musik.suchenUndSpielen(b.suchbegriff, app) { spielt ->
+                        if (spielt) lauschen()
+                        else if (!musik.hatSitzungszugriff())
+                            sagenDannLauschen("Nur Suche geöffnet. Bitte Benachrichtigungszugriff erlauben")
+                        else sagenDannLauschen("Konnte nicht direkt abspielen")
+                    }
                 }
             }
             is Befehl.Unbekannt -> sagenDannLauschen("Unbekannter Befehl")
