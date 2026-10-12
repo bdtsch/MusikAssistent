@@ -20,7 +20,7 @@ Eigener Sprachassistent für Android (getestet für OnePlus 9 Pro / OxygenOS 14)
 | Assistent aus | Lauschen beenden |
 
 ## APK über GitHub bauen
-1. Neues Repository auf GitHub anlegen und den Inhalt dieses Ordners hochladen (inkl. `.github`-Ordner und `app/signing.keystore`).
+1. Neues Repository auf GitHub anlegen und den Inhalt dieses Ordners hochladen (inkl. `.github`-Ordner und `app/signing.keystore.b64`).
 2. Der Workflow **„APK bauen“** startet automatisch (Reiter *Actions*). Dauert ca. 5 Minuten.
 3. Im fertigen Lauf unten unter *Artifacts* **MusikAssistent-APK** herunterladen, entpacken, APK installieren.
 
