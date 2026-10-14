@@ -24,4 +24,14 @@ class Einstellungen(context: Context) {
     var googleErkennung: Boolean
         get() = prefs.getBoolean("google", true)
         set(v) = prefs.edit().putBoolean("google", v).apply()
+
+    /** Bei mehrdeutigen Songs nachfragen ("Welchen meinst du?") */
+    var rueckfragen: Boolean
+        get() = prefs.getBoolean("rueckfragen", true)
+        set(v) = prefs.edit().putBoolean("rueckfragen", v).apply()
+
+    /** Empfindlichkeit des Aktivierungsworts: 0 = niedrig (kaum Fehlauslösungen), 1 = mittel, 2 = hoch */
+    var empfindlichkeit: Int
+        get() = prefs.getInt("empfindlichkeit", 1)
+        set(v) = prefs.edit().putInt("empfindlichkeit", v).apply()
 }

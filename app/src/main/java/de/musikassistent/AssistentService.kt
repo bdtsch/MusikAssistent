@@ -49,6 +49,15 @@ class AssistentService : Service() {
 
         private var modell: Model? = null   // bleibt geladen, solange der Prozess lebt
 
+        /** Häufige Wörter (auch aus Liedern), die als "Gegenkandidaten" dienen. */
+        private val ABLENKWOERTER = listOf(
+            "ja", "nein", "ich", "du", "wir", "und", "oder", "aber", "so", "mal", "da", "hier",
+            "nicht", "noch", "nur", "mit", "für", "von", "auf", "ein", "eine", "der", "die", "das",
+            "ist", "bin", "hab", "habe", "mein", "dein", "dich", "mich", "liebe", "herz", "nacht",
+            "tag", "leben", "immer", "nie", "alles", "hallo", "halt", "allo", "also", "hallen", "musi",
+            "mus", "mu", "ok", "okay", "hey", "oh", "la", "na", "ah", "radio", "computer", "auto"
+        )
+
         fun starten(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, AssistentService::class.java))
         }
@@ -73,7 +82,6 @@ class AssistentService : Service() {
     private var google: SpeechRecognizer? = null
     private var fokus: AudioFocusRequest? = null
     private var zustand = Zustand.LADEN
-    private var befehlsTimeout: Runnable? = null
 
     // ---------------- Lebenszyklus ----------------
 
@@ -146,9 +154,16 @@ class AssistentService : Service() {
         val wort = einst.aktivierungswort
         status("Hört auf „$wort“")
 
-        val grammatik = JSONArray().put(wort).put("[unk]").toString()
+        // Grammatik: Aktivierungswort + seine Einzelwörter + Ablenkwörter + [unk].
+        // Die Ablenkwörter geben der Erkennung "andere Möglichkeiten", sodass Gesang
+        // oder Gerede nicht mehr so leicht auf das Aktivierungswort gezwungen wird.
+        val grammatik = JSONArray().put(wort)
+        wort.split(" ").filter { it.isNotBlank() }.forEach { grammatik.put(it) }
+        ABLENKWOERTER.forEach { grammatik.put(it) }
+        grammatik.put("[unk]")
         try {
-            val rec = Recognizer(m, ABTASTRATE, grammatik).also { voskRec = it }
+            val rec = Recognizer(m, ABTASTRATE, grammatik.toString()).also { voskRec = it }
+            rec.setWords(true)   // liefert Sicherheit (conf) pro Wort
             voskDienst = SpeechService(rec, ABTASTRATE).also { it.startListening(wortHoerer) }
         } catch (e: Exception) {
             Log.e(TAG, "Mikrofon nicht verfügbar", e)
@@ -158,32 +173,74 @@ class AssistentService : Service() {
     }
 
     private val wortHoerer = object : org.vosk.android.RecognitionListener {
-        override fun onPartialResult(hypothesis: String?) = pruefen(hypothesis, "partial")
-        override fun onResult(hypothesis: String?) = pruefen(hypothesis, "text")
-        override fun onFinalResult(hypothesis: String?) = pruefen(hypothesis, "text")
+        // Teilergebnisse werden ignoriert – die lösen beim Singen am häufigsten falsch aus
+        override fun onPartialResult(hypothesis: String?) {}
+        override fun onResult(hypothesis: String?) = pruefen(hypothesis)
+        override fun onFinalResult(hypothesis: String?) = pruefen(hypothesis)
         override fun onError(exception: Exception?) {
             Log.e(TAG, "Vosk-Fehler", exception)
             haupt.postDelayed({ lauschen() }, 1000)
         }
         override fun onTimeout() {}
 
-        private fun pruefen(json: String?, feld: String) {
+        private fun pruefen(json: String?) {
             if (zustand != Zustand.LAUSCHEN || json == null) return
-            val text = JSONObject(json).optString(feld)
-            if (text.contains(einst.aktivierungswort)) aktiviert()
+            if (aktivierungswortSicher(json)) aktiviert()
         }
+    }
+
+    /**
+     * Prüft, ob das Aktivierungswort wirklich und deutlich gesagt wurde:
+     * alle Wörter direkt hintereinander, jedes mit hoher Erkennungssicherheit.
+     * Läuft gerade Musik (man singt evtl. mit), gilt eine strengere Schwelle.
+     */
+    private fun aktivierungswortSicher(json: String): Boolean {
+        val ziel = einst.aktivierungswort.split(" ").filter { it.isNotBlank() }
+        if (ziel.isEmpty()) return false
+        val woerter = JSONObject(json).optJSONArray("result") ?: return false
+        var schwelle = when (einst.empfindlichkeit) { 0 -> 0.95; 2 -> 0.75; else -> 0.88 }
+        if (audio.isMusicActive) schwelle = minOf(0.97, schwelle + 0.05)
+
+        for (start in 0..woerter.length() - ziel.size) {
+            var ok = true
+            var vorherEnde = -1.0
+            for (i in ziel.indices) {
+                val w = woerter.getJSONObject(start + i)
+                val conf = w.optDouble("conf", 0.0)
+                val anfang = w.optDouble("start", 0.0)
+                if (w.optString("word") != ziel[i] || conf < schwelle ||
+                    (vorherEnde >= 0 && anfang - vorherEnde > 0.6)) { ok = false; break }
+                vorherEnde = w.optDouble("end", 0.0)
+            }
+            if (ok) {
+                Log.i(TAG, "Aktivierungswort erkannt: $json")
+                return true
+            }
+        }
+        if (woerter.length() > 0) Log.d(TAG, "Verworfen (Schwelle $schwelle): $json")
+        return false
     }
 
     // ---------------- Phase 2: Befehl erkennen ----------------
 
     private fun aktiviert() {
+        voskStoppen()
+        zuhoeren { befehlVerarbeiten(it) }
+    }
+
+    private var aufAntwort: (List<String>?) -> Unit = {}
+
+    /** Piept, macht die Musik leiser und hört einen Satz lang zu. */
+    private fun zuhoeren(callback: (List<String>?) -> Unit) {
         zustand = Zustand.BEFEHL
+        aufAntwort = callback
         voskStoppen()
         fokusHolen()       // Musik leiser machen, damit man verstanden wird
         status("Ich höre …")
         piep()
         // kurz warten, damit der Piepton nicht mit aufgenommen wird
         haupt.postDelayed({
+            if (zustand != Zustand.BEFEHL) return@postDelayed
             if (einst.googleErkennung && SpeechRecognizer.isRecognitionAvailable(this)) googleBefehl()
             else offlineBefehl()
         }, 300)
@@ -196,7 +253,7 @@ class AssistentService : Service() {
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onResults(results: Bundle?) {
                 val liste = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                befehlErhalten(liste ?: emptyList<String>())
+                antwortErhalten(liste ?: emptyList<String>())
             }
             override fun onError(error: Int) {
                 Log.w(TAG, "Google-Erkennung Fehler $error")
@@ -204,7 +261,7 @@ class AssistentService : Service() {
                     || error == SpeechRecognizer.ERROR_SERVER || error == SpeechRecognizer.ERROR_CLIENT) {
                     googleStoppen()
                     offlineBefehl()      // kein Netz → offline weiter
-                } else befehlErhalten(null)
+                } else antwortErhalten(null)
             }
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
@@ -231,7 +288,7 @@ class AssistentService : Service() {
 
     /** Offline-Erkennung als Fallback (ohne Internet, bei Songnamen ungenauer). */
     private fun offlineBefehl() {
-        val m = modell ?: return befehlErhalten(null)
+        val m = modell ?: return antwortErhalten(null)
         try {
             val rec = Recognizer(m, ABTASTRATE).also { voskRec = it }
             voskDienst = SpeechService(rec, ABTASTRATE).also { dienst ->
@@ -239,26 +296,29 @@ class AssistentService : Service() {
                     override fun onPartialResult(hypothesis: String?) {}
                     override fun onResult(hypothesis: String?) {
                         val text = hypothesis?.let { JSONObject(it).optString("text") }
-                        if (!text.isNullOrBlank()) befehlErhalten(listOf(text))
+                        if (!text.isNullOrBlank()) antwortErhalten(listOf(text))
                     }
                     override fun onFinalResult(hypothesis: String?) {}
-                    override fun onError(exception: Exception?) = befehlErhalten(null)
-                    override fun onTimeout() = befehlErhalten(null)
+                    override fun onError(exception: Exception?) = antwortErhalten(null)
+                    override fun onTimeout() = antwortErhalten(null)
                 }, 7000)
             }
         } catch (e: Exception) {
-            befehlErhalten(null)
+            antwortErhalten(null)
         }
     }
 
-    private fun befehlErhalten(vorschlaege: List<String>?) {
+    private fun antwortErhalten(vorschlaege: List<String>?) {
         if (zustand != Zustand.BEFEHL) return
         zustand = Zustand.AUSFUEHREN
         voskStoppen()
         googleStoppen()
         fokusAbgeben()
-        Log.i(TAG, "Befehl: $vorschlaege")
+        Log.i(TAG, "Gehört: $vorschlaege")
+        aufAntwort(vorschlaege)
+    }
 
+    private fun befehlVerarbeiten(vorschlaege: List<String>?) {
         val liste = vorschlaege?.filter { it.isNotBlank() }.orEmpty()
         if (liste.isEmpty()) {
             sagenDannLauschen("Nicht verstanden")
@@ -285,43 +345,97 @@ class AssistentService : Service() {
                     app = MusikApp.values().firstOrNull { musik.istInstalliert(it) }
                         ?: return sagenDannLauschen("Weder Tidal noch Spotify installiert")
                 }
-                val ansage = if (b.suchbegriff.isBlank()) "Starte ${app.anzeige}"
-                    else "Spiele ${b.suchbegriff} auf ${app.anzeige}"
-                // erst ansagen, dann starten, damit die Ansage nicht in die Musik quatscht
-                sagen(ansage) {
-                    musik.suchenUndSpielen(b.suchbegriff, app) { spielt ->
-                        if (spielt) lauschen()
-                        else if (!musik.hatSitzungszugriff())
-                            sagenDannLauschen("Nur Suche geöffnet. Bitte Benachrichtigungszugriff erlauben")
-                        else sagenDannLauschen("Konnte nicht direkt abspielen")
-                    }
+                if (b.suchbegriff.isBlank()) {
+                    abspielen("", b.art, null, app)
+                    return
                 }
+                status("Suche „${b.suchbegriff}“ …")
+                val zielApp = app
+                Thread {
+                    val e = SongSuche.entscheiden(b.suchbegriff, b.art)
+                    haupt.post {
+                        if (!laeuft) return@post
+                        when {
+                            e is SuchEntscheidung.Nachfragen && einst.rueckfragen ->
+                                nachfragen(e.kandidaten, zielApp)
+                            e is SuchEntscheidung.Nachfragen ->
+                                abspielen(b.suchbegriff, SuchArt.SONG, e.kandidaten.first(), zielApp)
+                            e is SuchEntscheidung.Spielen ->
+                                abspielen(e.anfrage, e.art, e.kandidat, zielApp)
+                        }
+                    }
+                }.start()
             }
             is Befehl.Unbekannt -> sagenDannLauschen("Unbekannter Befehl")
         }
     }
 
+    /** "Welchen meinst du? Eins: … Zwei: …" und auf die Antwort hören. */
+    private fun nachfragen(kandidaten: List<Kandidat>, app: MusikApp) {
+        val namen = listOf("Eins", "Zwei", "Drei")
+        val frage = "Welchen meinst du? " + kandidaten.mapIndexed { i, k ->
+            "${namen[i]}: ${k.titel} von ${k.kuenstler}."
+        }.joinToString(" ")
+        sagen(frage, immerSprechen = true) {
+            zuhoeren { antwort ->
+                val wahl = BefehlsParser.parseAuswahl(antwort.orEmpty(), kandidaten.map { it.titel to it.kuenstler })
+                when {
+                    wahl == -1 -> sagenDannLauschen("Okay, abgebrochen")
+                    wahl != null -> abspielen("", SuchArt.SONG, kandidaten[wahl], app)
+                    else -> sagen("Ich nehme den ersten") { abspielen("", SuchArt.SONG, kandidaten[0], app) }
+                }
+            }
+        }
+    }
+
+    /** Spielt ab und sagt danach ehrlich an, was wirklich läuft. */
+    private fun abspielen(anfrage: String, art: SuchArt, kandidat: Kandidat?, app: MusikApp) {
+        zustand = Zustand.AUSFUEHREN
+        status("Starte ${app.anzeige} …")
+        musik.suchenUndSpielen(anfrage, art, kandidat, app) { erg ->
+            when (erg) {
+                is AbspielErgebnis.Spielt -> {
+                    val ansage = when {
+                        erg.titel.isBlank() -> "${app.anzeige} läuft"
+                        erg.kuenstler.isBlank() -> "Läuft: ${erg.titel}"
+                        else -> "Läuft: ${erg.titel} von ${erg.kuenstler}"
+                    }
+                    sagenDannLauschen(ansage)
+                }
+                AbspielErgebnis.NurSuche ->
+                    if (!musik.hatSitzungszugriff())
+                        sagenDannLauschen("Konnte nicht direkt abspielen, nur die Suche ist offen. Bitte Benachrichtigungszugriff erlauben", immerSprechen = true)
+                    else
+                        sagenDannLauschen("Konnte nicht direkt abspielen, die Suche ist offen", immerSprechen = true)
+                AbspielErgebnis.Fehlgeschlagen ->
+                    sagenDannLauschen("${app.anzeige} konnte nicht geöffnet werden", immerSprechen = true)
+            }
+        }
+    }
+
     // ---------------- Hilfen ----------------
 
-    private fun sagenDannLauschen(text: String) = sagen(text) { lauschen() }
+    private fun sagenDannLauschen(text: String, immerSprechen: Boolean = false) =
+        sagen(text, immerSprechen) { lauschen() }
 
     /** Spricht den Text (wenn aktiviert) und ruft danach [weiter] auf dem Hauptthread auf. */
-    private fun sagen(text: String, weiter: () -> Unit) {
+    private fun sagen(text: String, immerSprechen: Boolean = false, weiter: () -> Unit) {
         status(text)
         val t = tts
-        if (!einst.sprachausgabe || !ttsBereit || t == null) {
+        if ((!einst.sprachausgabe && !immerSprechen) || !ttsBereit || t == null) {
             haupt.post { weiter() }; return
         }
         val id = System.nanoTime().toString()
         var erledigt = false
-        val fertig = { if (!erledigt) { erledigt = true; haupt.post { weiter() } } }
+        fokusHolen()   // Musik während der Ansage leiser
+        val fertig = { if (!erledigt) { erledigt = true; haupt.post { fokusAbgeben(); weiter() } } }
         t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {}
             override fun onDone(utteranceId: String?) { if (utteranceId == id) fertig() }
             @Deprecated("alt") override fun onError(utteranceId: String?) { fertig() }
         })
         t.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
-        haupt.postDelayed({ fertig() }, 6000) // Sicherheitsnetz
+        haupt.postDelayed({ fertig() }, 4000L + text.length * 90L) // Sicherheitsnetz, je nach Textlänge
     }
 
     private fun piep() {

@@ -11,8 +11,8 @@ android {
         applicationId = "de.musikassistent"
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
         // OnePlus 9 Pro = arm64, spart Platz
         ndk { abiFilters += listOf("arm64-v8a") }
     }

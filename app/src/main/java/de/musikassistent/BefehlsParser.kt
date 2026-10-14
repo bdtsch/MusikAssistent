@@ -9,9 +9,11 @@ sealed class Befehl {
     object Lauter : Befehl()
     object Leiser : Befehl()
     object Stopp : Befehl()            // Assistent beenden
-    data class Suchen(val suchbegriff: String, val app: MusikApp?) : Befehl()
+    data class Suchen(val suchbegriff: String, val app: MusikApp?, val art: SuchArt = SuchArt.UNBEKANNT) : Befehl()
     data class Unbekannt(val text: String) : Befehl()
 }
+
+enum class SuchArt { UNBEKANNT, SONG, ALBUM, KUENSTLER, PLAYLIST }
 
 enum class MusikApp(val paket: String, val anzeige: String) {
     TIDAL("com.aspiro.tidal", "Tidal"),
@@ -45,12 +47,18 @@ object BefehlsParser {
         "play", "play me", "put on", "search", "search for", "find", "listen to", "start"
     ).sortedByDescending { it.length }
 
-    // Füllwörter direkt nach dem Startwort
+    // Füllwörter direkt nach dem Startwort, mit der Art der Suche
     private val fuellwoerter = listOf(
-        "den song", "das lied", "das album", "die playlist", "lieder von", "musik von", "songs von",
-        "was von", "etwas von", "irgendwas von", "den titel", "mir",
-        "the song", "the album", "the playlist", "songs by", "music by", "something by", "some", "song", "album"
-    ).sortedByDescending { it.length }
+        "den song" to SuchArt.SONG, "das lied" to SuchArt.SONG, "den titel" to SuchArt.SONG,
+        "the song" to SuchArt.SONG, "song" to SuchArt.SONG, "lied" to SuchArt.SONG,
+        "das album" to SuchArt.ALBUM, "the album" to SuchArt.ALBUM, "album" to SuchArt.ALBUM,
+        "die playlist" to SuchArt.PLAYLIST, "meine playlist" to SuchArt.PLAYLIST,
+        "the playlist" to SuchArt.PLAYLIST, "my playlist" to SuchArt.PLAYLIST, "playlist" to SuchArt.PLAYLIST,
+        "lieder von" to SuchArt.KUENSTLER, "musik von" to SuchArt.KUENSTLER, "songs von" to SuchArt.KUENSTLER,
+        "was von" to SuchArt.KUENSTLER, "etwas von" to SuchArt.KUENSTLER, "irgendwas von" to SuchArt.KUENSTLER,
+        "songs by" to SuchArt.KUENSTLER, "music by" to SuchArt.KUENSTLER, "something by" to SuchArt.KUENSTLER,
+        "some" to SuchArt.KUENSTLER, "mir" to SuchArt.UNBEKANNT
+    ).sortedByDescending { it.first.length }
 
     private val praepositionen = setOf("auf", "bei", "in", "mit", "über", "via", "on", "with", "using", "from", "an")
 
@@ -126,9 +134,10 @@ object BefehlsParser {
         val (ohneApp, app) = appAbtrennen(rest)
         rest = ohneApp
 
-        // Füllwörter vorne entfernen
-        for (f in fuellwoerter) {
-            if (rest.startsWith("$f ")) { rest = rest.removePrefix(f).trim(); break }
+        // Füllwörter vorne entfernen und daraus die Art ableiten
+        var art = SuchArt.UNBEKANNT
+        for ((f, a) in fuellwoerter) {
+            if (rest.startsWith("$f ")) { rest = rest.removePrefix(f).trim(); art = a; break }
         }
         rest = rest.trim()
 
@@ -137,7 +146,48 @@ object BefehlsParser {
             return if (app != null) Befehl.Suchen("", app) else Befehl.Abspielen
         }
         if (rest == "weiter" || rest == "on") return Befehl.Abspielen
-        return Befehl.Suchen(rest, app)
+        return Befehl.Suchen(rest, app, art)
+    }
+
+    // ---------- Antwort auf eine Rückfrage ("Meinst du 1, 2 oder 3?") ----------
+
+    private val zahlen = listOf(
+        setOf("1", "eins", "einen", "erste", "ersten", "erstes", "der erste", "das erste", "nummer eins",
+            "first", "one", "the first", "number one", "won", "ein"),
+        setOf("2", "zwei", "zwo", "zweite", "zweiten", "zweites", "der zweite", "nummer zwei",
+            "second", "two", "the second", "number two", "too", "to"),
+        setOf("3", "drei", "dritte", "dritten", "drittes", "der dritte", "nummer drei",
+            "third", "three", "the third", "number three", "tree")
+    )
+    private val ablehnen = setOf("nein", "keins", "keinen", "keiner", "nichts", "abbrechen", "egal",
+        "none", "no", "cancel", "neither", "nope", "vergiss es", "forget it")
+
+    /**
+     * Wertet die Antwort auf eine Rückfrage aus.
+     * @return Index des gewählten Vorschlags, -1 = abgelehnt, null = nicht verstanden
+     */
+    fun parseAuswahl(vorschlaege: List<String>, kandidaten: List<Pair<String, String>>): Int? {
+        for (roh in vorschlaege) {
+            val t = normalisieren(roh).removePrefix("bitte ").removePrefix("ich meine ").removePrefix("i mean ").trim()
+            if (t.isEmpty()) continue
+            val woerter = t.split(" ")
+            // Zahl / Ordnungszahl – erst exakt, dann Ordnungszahlen im Satz ("the second one"), dann erstes Wort
+            val n = kandidaten.size
+            zahlen.forEachIndexed { i, set -> if (i < n && t in set) return i }
+            zahlen.forEachIndexed { i, set ->
+                if (i < n && woerter.any { it in set && it.length > 3 && it !in setOf("eins", "einen") }) return i
+            }
+            zahlen.forEachIndexed { i, set -> if (i < n && woerter.first() in set) return i }
+            if (t in ablehnen || woerter.first() in ablehnen) return -1
+            // Künstler- oder Titelname genannt ("den von Linkin Park")
+            kandidaten.forEachIndexed { i, (titel, kuenstler) ->
+                val k = normalisieren(kuenstler); val ti = normalisieren(titel)
+                if (k.isNotEmpty() && (t.contains(k) || k.split(" ").any { it.length > 3 && it in woerter })) return i
+                if (ti.isNotEmpty() && t.contains(ti) && kandidaten.count { normalisieren(it.first) == ti } == 1) return i
+            }
+            if (woerter.any { it in setOf("ja", "yes", "genau", "richtig", "yeah", "jep", "okay", "ok") }) return 0
+        }
+        return null
     }
 
     /** Trennt "<suche> auf <app>" bzw. "auf <app> <suche>" auf. */

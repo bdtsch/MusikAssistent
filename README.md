@@ -37,6 +37,17 @@ Zusätzlich empfohlen: *Einstellungen → Akku → Musik-Assistent → Hintergru
 
 **Schnellkachel:** Statusleiste runterziehen → Stift → „Musik-Assistent“ hinzufügen. Damit schaltest du ihn beim Einsteigen mit einem Tipp an.
 
+## Rückfragen & ehrliche Ansage
+- Bei mehrdeutigen Titeln („spiel Hello“) fragt der Assistent: „Welchen meinst du? Eins: Hello von Adele. Zwei: Hello von Lionel Richie.“ Antworten: „eins“, „die zweite“, „Adele“, „the second one“, „nein“ (abbrechen). Ohne Antwort nimmt er den ersten.
+- Titel + Künstler zusammen („spiel Numb Linkin Park“) wird direkt gespielt, nur ein Künstlername spielt den Künstler.
+- Nach dem Start wird geprüft, was wirklich läuft, und angesagt („Läuft: Numb von Linkin Park“). Läuft nichts Neues, sagt er das ehrlich.
+- Die Titel-Infos kommen aus der freien Deezer-Suche (nur als Musiklexikon, kein Konto nötig).
+
+## Fehlauslösungen
+- Aktivierungswort wird nur mit hoher Erkennungssicherheit akzeptiert, während Musik läuft noch strenger.
+- Empfindlichkeit in der App einstellbar (Niedrig/Mittel/Hoch).
+- Aktivierungswort sagen, kurz auf den Piepton warten, dann den Befehl.
+
 ## Hinweise
 - **Songsuche bei Tidal:** Spotify spielt gesuchte Songs zuverlässig direkt ab. Ob Tidal direkt abspielt oder nur die Suche öffnet, hängt von der Tidal-Version ab. Falls nur die Suche aufgeht, ist das eine Grenze der Tidal-App.
 - **Aktivierungswort:** Nur deutsche Wörter verwenden, die das Offline-Modell kennt. Zwei Wörter lösen seltener aus Versehen aus.

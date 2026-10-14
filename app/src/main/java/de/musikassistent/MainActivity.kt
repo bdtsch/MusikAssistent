@@ -101,8 +101,8 @@ class MainActivity : Activity() {
         }
         spalte.addView(wortFeld)
         spalte.addView(TextView(this).apply {
-            text = "Nur einfache deutsche Wörter verwenden (z. B. „hallo musik“, „okay radio“, „computer“). " +
-                "Zwei Wörter lösen seltener versehentlich aus."
+            text = "Nur einfache deutsche Wörter verwenden (z. B. „hallo musik“, „okay radio“). " +
+                "Zwei Wörter lösen seltener versehentlich aus. Ungewöhnliche Kombinationen, die in Liedern nicht vorkommen, sind am besten."
             textSize = 13f
         })
         spalte.addView(abstand(Button(this).apply {
@@ -126,6 +126,26 @@ class MainActivity : Activity() {
             isChecked = einst.googleErkennung
             setOnCheckedChangeListener { _, an -> einst.googleErkennung = an }
         })
+        spalte.addView(CheckBox(this).apply {
+            text = "Bei mehrdeutigen Songs nachfragen („Welchen meinst du? Eins … Zwei …“)"
+            isChecked = einst.rueckfragen
+            setOnCheckedChangeListener { _, an -> einst.rueckfragen = an }
+        })
+
+        // --- Empfindlichkeit ---
+        spalte.addView(titel("Empfindlichkeit Aktivierungswort"))
+        val empf = RadioGroup(this)
+        listOf("Niedrig – reagiert kaum beim Singen, Wort deutlich sagen",
+            "Mittel (empfohlen)",
+            "Hoch – reagiert leichter, aber auch öfter falsch").forEachIndexed { i, t ->
+            empf.addView(RadioButton(this).apply {
+                id = 100 + i
+                text = t
+                isChecked = einst.empfindlichkeit == i
+            })
+        }
+        empf.setOnCheckedChangeListener { _, id -> einst.empfindlichkeit = id - 100 }
+        spalte.addView(empf)
 
         // --- Berechtigungen ---
         spalte.addView(titel("Einrichtung"))

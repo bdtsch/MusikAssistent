@@ -24,6 +24,15 @@ import android.view.KeyEvent
  * dafür braucht die App "Benachrichtigungszugriff". Ohne den gibt es nur
  * den alten Weg per Intent (bei Spotify öffnet sich dann oft nur die Suche).
  */
+/** Was nach einem Abspielversuch wirklich passiert ist. */
+sealed class AbspielErgebnis {
+    /** Es läuft etwas Neues. [passt] = entspricht dem gesuchten Song (soweit prüfbar). */
+    data class Spielt(val titel: String, val kuenstler: String, val passt: Boolean) : AbspielErgebnis()
+    /** Konnte nicht direkt abspielen, aber die Suche in der App wurde geöffnet. */
+    object NurSuche : AbspielErgebnis()
+    object Fehlgeschlagen : AbspielErgebnis()
+}
+
 class MusikSteuerung(private val context: Context) {
 
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -77,52 +86,112 @@ class MusikSteuerung(private val context: Context) {
     // ---------------- Suchen & Abspielen ----------------
 
     /**
-     * Sucht und spielt ab. [fertig] bekommt true, wenn die Musik läuft,
-     * false, wenn höchstens die Suche geöffnet werden konnte.
+     * Sucht und spielt ab und meldet ehrlich zurück, was danach wirklich läuft.
+     * @param ziel konkreter Song aus der Katalogsuche (falls bekannt) – macht die Suche in der App genauer
      */
-    fun suchenUndSpielen(begriff: String, app: MusikApp, fertig: (Boolean) -> Unit) {
+    fun suchenUndSpielen(
+        anfrage: String, art: SuchArt, ziel: Kandidat?, app: MusikApp,
+        fertig: (AbspielErgebnis) -> Unit
+    ) {
+        val text = if (ziel != null) "${ziel.titel} ${ziel.kuenstler}" else anfrage
         if (!hatSitzungszugriff()) {
-            fertig(perIntent(begriff, app) && false)
+            fertig(perIntent(text, app))
             return
         }
         val sitzung = sitzungVon(app)
         if (sitzung != null) {
-            perSitzung(sitzung, begriff, app, fertig)
+            perSitzung(sitzung, text, art, ziel, app, fertig)
             return
         }
-        // App läuft noch nicht: im Hintergrund starten und auf ihre Mediensitzung warten
+        // App läuft noch nicht: starten und auf ihre Mediensitzung warten
         appStarten(app)
         warteAufSitzung(app, versuche = 20) { s ->
-            if (s != null) perSitzung(s, begriff, app, fertig)
-            else fertig(perIntent(begriff, app) && false)
+            if (s != null) perSitzung(s, text, art, ziel, app, fertig)
+            else fertig(perIntent(text, app))
         }
     }
 
-    private fun perSitzung(s: MediaController, begriff: String, app: MusikApp, fertig: (Boolean) -> Unit) {
-        Log.i(AssistentService.TAG, "playFromSearch an ${s.packageName}: $begriff")
-        if (begriff.isBlank()) s.transportControls.play()
-        else s.transportControls.playFromSearch(begriff, Bundle().apply {
-            putString(SearchManager.QUERY, begriff)
-        })
-        // Prüfen, ob es wirklich losgeht. Wenn nicht: Intent-Weg als Notlösung
-        pruefeObSpielt(app, versuche = 10, vorherTitel = titel(s)) { spielt ->
-            if (spielt) fertig(true)
-            else fertig(perIntent(begriff, app) && false)
+    private fun perSitzung(
+        s: MediaController, text: String, art: SuchArt, ziel: Kandidat?, app: MusikApp,
+        fertig: (AbspielErgebnis) -> Unit
+    ) {
+        val vorherTitel = titel(s)
+        val vorherSpielte = s.playbackState?.state == PlaybackState.STATE_PLAYING
+        Log.i(AssistentService.TAG, "playFromSearch an ${s.packageName}: $text ($art), vorher: $vorherTitel")
+
+        if (text.isBlank()) {
+            s.transportControls.play()
+        } else {
+            s.transportControls.playFromSearch(text, suchExtras(text, art, ziel))
+        }
+
+        pruefe(app, versuche = 18, vorherTitel, vorherSpielte, nurFortsetzen = text.isBlank(), ziel) { ergebnis ->
+            if (ergebnis != null) fertig(ergebnis)
+            else fertig(perIntent(text, app))   // hat nicht geklappt → wenigstens Suche öffnen
+        }
+    }
+
+    /** Zusatzinfos nach Android-Standard, damit die App weiß, ob Song, Album oder Künstler gemeint ist. */
+    private fun suchExtras(text: String, art: SuchArt, ziel: Kandidat?) = Bundle().apply {
+        putString(SearchManager.QUERY, text)
+        when {
+            ziel != null -> {
+                putString(MediaStore.EXTRA_MEDIA_FOCUS, MediaStore.Audio.Media.ENTRY_CONTENT_TYPE)
+                putString(MediaStore.EXTRA_MEDIA_TITLE, ziel.titel)
+                putString(MediaStore.EXTRA_MEDIA_ARTIST, ziel.kuenstler)
+                if (ziel.album.isNotEmpty()) putString(MediaStore.EXTRA_MEDIA_ALBUM, ziel.album)
+            }
+            art == SuchArt.KUENSTLER -> {
+                putString(MediaStore.EXTRA_MEDIA_FOCUS, MediaStore.Audio.Artists.ENTRY_CONTENT_TYPE)
+                putString(MediaStore.EXTRA_MEDIA_ARTIST, text)
+            }
+            art == SuchArt.ALBUM -> {
+                putString(MediaStore.EXTRA_MEDIA_FOCUS, MediaStore.Audio.Albums.ENTRY_CONTENT_TYPE)
+                putString(MediaStore.EXTRA_MEDIA_ALBUM, text)
+            }
+            art == SuchArt.PLAYLIST -> {
+                putString(MediaStore.EXTRA_MEDIA_FOCUS, MediaStore.Audio.Playlists.ENTRY_CONTENT_TYPE)
+                putString(MediaStore.EXTRA_MEDIA_PLAYLIST, text)
+            }
+            else -> putString(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
         }
     }
 
     private fun titel(s: MediaController?) =
         s?.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE)
 
-    private fun pruefeObSpielt(app: MusikApp, versuche: Int, vorherTitel: String?, ergebnis: (Boolean) -> Unit) {
+    private fun kuenstler(s: MediaController?) =
+        s?.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST)
+
+    /**
+     * Wartet bis zu ~9 s. Erfolg nur, wenn wirklich etwas Neues läuft:
+     * - der Titel hat sich geändert, oder
+     * - der laufende Titel passt zum gesuchten Song, oder
+     * - es sollte nur fortgesetzt werden und es läuft.
+     * Läuft einfach der alte Song weiter, zählt das NICHT als Erfolg.
+     */
+    private fun pruefe(
+        app: MusikApp, versuche: Int, vorherTitel: String?, vorherSpielte: Boolean,
+        nurFortsetzen: Boolean, ziel: Kandidat?, ergebnis: (AbspielErgebnis?) -> Unit
+    ) {
         haupt.postDelayed({
             val s = sitzungVon(app)
-            val state = s?.playbackState?.state
-            val spielt = state == PlaybackState.STATE_PLAYING || state == PlaybackState.STATE_BUFFERING ||
-                state == PlaybackState.STATE_CONNECTING
-            if (spielt && (titel(s) != vorherTitel || versuche <= 6)) ergebnis(true)
-            else if (versuche <= 0) ergebnis(spielt)
-            else pruefeObSpielt(app, versuche - 1, vorherTitel, ergebnis)
+            val spielt = s?.playbackState?.state == PlaybackState.STATE_PLAYING
+            val t = titel(s)
+            val passtZumZiel = ziel != null && t != null &&
+                SongSuche.aehnlich(SongSuche.norm(t), SongSuche.norm(ziel.titel)) >= 0.7
+            val neu = t != null && t != vorherTitel
+            when {
+                spielt && (neu || passtZumZiel || (nurFortsetzen && !vorherSpielte) || (nurFortsetzen && t != null)) ->
+                    // kurz warten, falls die Titelinfo noch nachgeladen wird
+                    haupt.postDelayed({
+                        val s2 = sitzungVon(app)
+                        ergebnis(AbspielErgebnis.Spielt(titel(s2) ?: t ?: "", kuenstler(s2) ?: kuenstler(s) ?: "",
+                            passtZumZiel || ziel == null))
+                    }, 700)
+                versuche <= 0 -> ergebnis(null)
+                else -> pruefe(app, versuche - 1, vorherTitel, vorherSpielte, nurFortsetzen, ziel, ergebnis)
+            }
         }, 500)
     }
 
@@ -154,8 +223,11 @@ class MusikSteuerung(private val context: Context) {
         }
     }
 
-    /** Alter Weg: Android-Standard-Intent, danach notfalls Suche in der App öffnen. */
-    private fun perIntent(begriff: String, app: MusikApp): Boolean {
+    /** Notlösung ohne Sitzung: Android-Standard-Intent, sonst Suche in der App öffnen. */
+    private fun perIntent(begriff: String, app: MusikApp): AbspielErgebnis =
+        if (perIntentStarten(begriff, app)) AbspielErgebnis.NurSuche else AbspielErgebnis.Fehlgeschlagen
+
+    private fun perIntentStarten(begriff: String, app: MusikApp): Boolean {
         val spielen = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
             setPackage(app.paket)
             putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
